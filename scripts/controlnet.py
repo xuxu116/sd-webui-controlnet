@@ -537,6 +537,7 @@ class Script(scripts.Script):
         forward_params = []
         post_processors = []
         hook_lowvram = False
+        input_images = None
 
         # cache stuff
         if self.latest_model_hash != p.sd_model.sd_model_hash:
@@ -603,6 +604,11 @@ class Script(scripts.Script):
                         unit.module = 'none'  # Always use black bg and white line
             else:
                 # use img2img init_image as default
+
+                if hasattr(p, "img2img_batch_parallel") and p.img2img_batch_parallel:
+                    input_images = getattr(p, "init_images", [None])
+                    input_images = [HWC3(np.asarray(input_image)) for input_image in input_images]
+                
                 input_image = getattr(p, "init_images", [None])[0]
                 if input_image is None:
                     if batch_hijack.instance.is_batch:
@@ -722,7 +728,13 @@ class Script(scripts.Script):
                 print(f'estimation = {estimation}')
 
             print(f'preprocessor resolution = {preprocessor_resolution}')
-            detected_map, is_image = preprocessor(input_image, res=preprocessor_resolution, thr_a=unit.threshold_a, thr_b=unit.threshold_b)
+            if input_images is not None:
+                _detected_maps = []
+                for _img in input_images:
+                    detected_map, is_image = preprocessor(_img, res=preprocessor_resolution, thr_a=unit.threshold_a, thr_b=unit.threshold_b)
+                    _detected_maps.append(detected_map)
+            else:
+                detected_map, is_image = preprocessor(input_image, res=preprocessor_resolution, thr_a=unit.threshold_a, thr_b=unit.threshold_b)
 
             if unit.module == "none" and "style" in unit.model:
                 detected_map_bytes = detected_map[:,:,0].tobytes()
@@ -749,8 +761,15 @@ class Script(scripts.Script):
                 hr_control = None
 
             if is_image:
-                control, detected_map = self.detectmap_proc(detected_map, unit.module, resize_mode, h, w)
-                detected_maps.append((detected_map, unit.module))
+                if input_images is not None:
+                    controls = []
+                    for _detected_map in _detected_maps:
+                        control, detected_map = self.detectmap_proc(_detected_map, unit.module, resize_mode, h, w)
+                        controls.append(control.clone())
+                    control = torch.cat(controls)
+                else:
+                    control, detected_map = self.detectmap_proc(detected_map, unit.module, resize_mode, h, w)
+                    detected_maps.append((detected_map, unit.module))
             else:
                 control = detected_map
                 if unit.module == 'clip_vision':

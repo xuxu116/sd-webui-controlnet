@@ -273,7 +273,7 @@ class UnetHook(nn.Module):
         self.model = model
         self.sd_ldm = sd_ldm
         self.control_params = control_params
-
+        self.process = process
         outer = self
 
         def process_sample(*args, **kwargs):
@@ -402,6 +402,9 @@ class UnetHook(nn.Module):
                     m = (m > 0.5).float()
                     hint = c * (1 - m) - m
 
+                if hint.shape[0] > 1 and hint.shape[0] != x_in.shape[0]:
+                    hint = torch.cat([hint, hint])
+                
                 control = param.control_model(x=x_in, hint=hint, timesteps=timesteps, context=context)
                 control_scales = ([param.weight] * 13)
 
