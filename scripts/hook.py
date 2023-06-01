@@ -505,6 +505,28 @@ class UnetHook(nn.Module):
                 outer.attention_auto_machine = AutoMachine.Read
                 outer.gn_auto_machine = AutoMachine.Read
 
+            ## 处理batch 的混合
+
+            if hasattr(outer.process, "img2img_batch_parallel") and outer.process.img2img_batch_parallel:
+                if not hasattr(outer.gn_module_list[0], "batchbank_mean_dict") or \
+                    outer.process.current_batch_xl < outer.gn_module_list[0].batchbank_mean_dict["batch"]:
+
+                    for module in outer.attn_module_list:
+                        module.batchbank_dict = {"batch": outer.process.current_batch_xl, "timesteps": int(timesteps[0].cpu())}
+
+                    for module in outer.gn_module_list:
+                        module.batchbank_mean_dict = {"batch": outer.process.current_batch_xl, "timesteps": int(timesteps[0].cpu())}
+                        module.batchbank_std_dict = {}
+
+                else:
+                    for module in outer.attn_module_list:
+                        module.batchbank_dict["batch"] = outer.process.current_batch_xl
+                        module.batchbank_dict["timesteps"] = int(timesteps[0].cpu())
+
+                    for module in outer.gn_module_list:
+                        module.batchbank_mean_dict["batch"] = outer.process.current_batch_xl
+                        module.batchbank_mean_dict["timesteps"] = int(timesteps[0].cpu())
+
             # U-Net Encoder
             hs = []
             with th.no_grad():
@@ -657,6 +679,111 @@ class UnetHook(nn.Module):
                 y = x
             return y.to(x.dtype)
 
+        def hacked_basic_transformer_inner_forward_batch_sequantial(self, x, context=None):
+            x_norm1 = self.norm1(x)
+            self_attn1 = None
+            if self.disable_self_attn:
+                # Do not use self-attention
+                self_attn1 = self.attn1(x_norm1, context=context)
+            else:
+                # Use self-attention
+                self_attention_context = x_norm1
+                NN,DD,CC = x_norm1.shape
+                NNf = int(NN/2)
+                # import pdb
+                # pdb.set_trace()
+                context_p = []
+                context_n = []
+                ### 第一个batch
+                if self.batchbank_dict["batch"] == 0:
+                    self.batchbank_dict[self.batchbank_dict["timesteps"]] = x_norm1.detach().clone()
+                    for i in range(NNf):
+                        # context_p.append(torch.cat([x_norm1[0:i], x_norm1[i+1:NNf]]).mean(dim=0, keepdim=True))
+                        context_p.append(torch.cat([x_norm1[0:i], x_norm1[i+1:NNf]]).reshape(1, -1, CC))
+
+                    for i in range(NNf,NN):
+                        # context_n.append(torch.cat([x_norm1[NNf:i], x_norm1[i+1:NN]]).mean(dim=0, keepdim=True))
+                        context_n.append(torch.cat([x_norm1[NNf:i], x_norm1[i+1:NN]]).reshape(1,-1,CC))
+
+                    self_attn1 = self.attn1(x_norm1, context=torch.cat([x_norm1, torch.cat(context_p + context_n, dim=0)], dim=1))
+                else:
+                    Np, Dp, Cp = self.batchbank_dict[self.batchbank_dict["timesteps"]].shape
+                    NPf = int(Np / 2)
+                    _x_norm_p = torch.cat([self.batchbank_dict[self.batchbank_dict["timesteps"]][(NPf-NNf):NPf], x_norm1[:NNf]])
+                    _x_norm_p = _x_norm_p[1:].unfold(0,NNf,1)
+                    _x_norm_p = torch.permute(_x_norm_p, (3, 0, 1, 2))
+                    _x_norm_p = _x_norm_p.reshape(NNf, -1, CC)
+
+                    _x_norm_n = torch.cat([self.batchbank_dict[self.batchbank_dict["timesteps"]][(NPf + NPf-NNf):], x_norm1[NNf:]])
+                    _x_norm_n = _x_norm_n[1:].unfold(0,NNf,1)
+                    _x_norm_n = torch.permute(_x_norm_n, (3, 0, 1, 2))
+                    _x_norm_n = _x_norm_n.reshape(NNf, -1, CC)
+                    try:
+                        #### 待排查是否要再cat XNorm1
+                        self_attn1 = self.attn1(x_norm1, context=torch.cat([_x_norm_p, _x_norm_n], dim=0))
+                    except:
+                        import pdb
+                        pdb.set_trace()
+                    self.batchbank_dict[self.batchbank_dict["timesteps"]] = x_norm1.detach().clone()
+
+                if self_attn1 is None:
+                    self_attn1 = self.attn1(x_norm1, context=self_attention_context)
+
+            x = self_attn1.to(x.dtype) + x
+            x = self.attn2(self.norm2(x), context=context) + x
+            x = self.ff(self.norm3(x)) + x
+            return x
+        
+        def hacked_group_norm_forward_batch(self, *args, **kwargs):
+            eps = 1e-6
+            x = self.original_forward(*args, **kwargs)
+            NN,CC,HH,WW = x.shape
+            NNf = int(NN/2)
+            y = None
+            var, mean = torch.var_mean(x, dim=(2, 3), keepdim=True, correction=0)
+            std = torch.maximum(var, torch.zeros_like(var) + eps) ** 0.5
+
+            ### 第一个batch
+            if self.batchbank_mean_dict["batch"] == 0:
+                self.batchbank_mean_dict[self.batchbank_mean_dict["timesteps"]] = mean.detach().clone()
+                self.batchbank_std_dict[self.batchbank_mean_dict["timesteps"]] = std.detach().clone()
+          
+                std_positive = torch.mean(std[:NNf], dim=0, keepdim=True).repeat(NNf,1,1,1)
+                mean_positive = torch.mean(mean[:NNf], dim=0, keepdim=True).repeat(NNf,1,1,1)
+                std_neg = torch.mean(std[NNf:], dim=0, keepdim=True).repeat(NNf,1,1,1)
+                mean_neg = torch.mean(mean[NNf:], dim=0, keepdim=True).repeat(NNf,1,1,1)
+                std_new = torch.cat([std_positive, std_neg])
+                mean_new = torch.cat([mean_positive, mean_neg])       
+
+            else:
+                Np, Dp, _, _ = self.batchbank_mean_dict[self.batchbank_mean_dict["timesteps"]].shape
+                NPf = int(Np / 2)
+                _mean_positive = torch.cat([self.batchbank_mean_dict[self.batchbank_mean_dict["timesteps"]][(NPf-NNf):NPf], mean[:NNf]], dim=0)
+                _mean_positive = _mean_positive[1:].unfold(0,NNf,1)
+                _mean_positive = _mean_positive.mean(-1)
+                _std_positive = torch.cat([self.batchbank_std_dict[self.batchbank_mean_dict["timesteps"]][(NPf-NNf):NPf], std[:NNf]], dim=0)
+                _std_positive = _std_positive[1:].unfold(0,NNf,1)
+                _std_positive = _std_positive.mean(-1)
+
+                _mean_neg = torch.cat([self.batchbank_mean_dict[self.batchbank_mean_dict["timesteps"]][(NPf + NPf-NNf):], mean[NNf:]], dim=0)
+                _mean_neg = _mean_neg[1:].unfold(0,NNf,1)
+                _mean_neg = _mean_neg.mean(-1)
+                _std_neg = torch.cat([self.batchbank_std_dict[self.batchbank_mean_dict["timesteps"]][(NPf + NPf-NNf):], std[NNf:]], dim=0)
+                _std_neg = _std_neg[1:].unfold(0,NNf,1)
+                _std_neg = _std_neg.mean(-1)
+                
+                std_new = torch.cat([_std_positive, _std_neg])
+                mean_new = torch.cat([_mean_positive, _mean_neg]) 
+
+                self.batchbank_mean_dict[self.batchbank_mean_dict["timesteps"]] = mean_new.detach().clone()
+                self.batchbank_std_dict[self.batchbank_mean_dict["timesteps"]] = std_new.detach().clone()
+
+            y = (((x - mean) / std) * std_new) + mean_new
+
+            if y is None:
+                y = x
+            return y.to(x.dtype)
+        
         if getattr(process, 'sample_before_CN_hack', None) is None:
             process.sample_before_CN_hack = process.sample
         process.sample = process_sample
@@ -675,7 +802,10 @@ class UnetHook(nn.Module):
         for i, module in enumerate(attn_modules):
             if getattr(module, '_original_inner_forward', None) is None:
                 module._original_inner_forward = module._forward
-            module._forward = hacked_basic_transformer_inner_forward.__get__(module, BasicTransformerBlock)
+            if hasattr(outer.process, "img2img_batch_parallel") and outer.process.img2img_batch_parallel:
+                module._forward = hacked_basic_transformer_inner_forward_batch_sequantial.__get__(module, BasicTransformerBlock)
+            else:
+                module._forward = hacked_basic_transformer_inner_forward.__get__(module, BasicTransformerBlock)
             module.bank = []
             module.style_cfgs = []
             module.attn_weight = float(i) / float(len(attn_modules))
@@ -698,7 +828,10 @@ class UnetHook(nn.Module):
         for i, module in enumerate(gn_modules):
             if getattr(module, 'original_forward', None) is None:
                 module.original_forward = module.forward
-            module.forward = hacked_group_norm_forward.__get__(module, torch.nn.Module)
+            if hasattr(outer.process, "img2img_batch_parallel") and outer.process.img2img_batch_parallel:
+                module.forward = hacked_group_norm_forward_batch.__get__(module, torch.nn.Module)
+            else:
+                module.forward = hacked_group_norm_forward.__get__(module, torch.nn.Module)
             module.mean_bank = []
             module.var_bank = []
             module.style_cfgs = []
