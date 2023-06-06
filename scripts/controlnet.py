@@ -25,6 +25,7 @@ from scripts.controlnet_ui.controlnet_ui_group import ControlNetUiGroup, UiContr
 from scripts.logging import logger
 from modules.processing import StableDiffusionProcessingImg2Img, StableDiffusionProcessingTxt2Img
 from modules.images import save_image
+from modules.logging import Timer
 
 import cv2
 import numpy as np
@@ -35,6 +36,8 @@ from PIL import Image, ImageFilter, ImageOps
 from scripts.lvminthin import lvmin_thin, nake_nms
 from scripts.processor import model_free_preprocessors
 
+
+timer = Timer(10)
 gradio_compat = True
 try:
     from distutils.version import LooseVersion
@@ -781,6 +784,8 @@ class Script(scripts.Script):
                 )
 
             logger.info(f'preprocessor resolution = {preprocessor_resolution}')
+            _name = unit.module + "_preprocessor"
+            timer.tic(_name)
             if input_images is not None:
                 _detected_maps = []
                 for _img in input_images:
@@ -788,7 +793,9 @@ class Script(scripts.Script):
                     _detected_maps.append(detected_map)
             else:
                 detected_map, is_image = preprocessor(input_image, res=preprocessor_resolution, thr_a=unit.threshold_a, thr_b=unit.threshold_b)
-
+            timer.toc(_name)
+            logger.info("[%s time: ave %.4f, total %.4f]" %(_name, timer.avetime(_name), timer.totaltime(_name)))
+            
             if unit.module == "none" and "style" in unit.model:
                 detected_map_bytes = detected_map[:,:,0].tobytes()
                 detected_map = np.ndarray((round(input_image.shape[0]/4),input_image.shape[1]),dtype="float32",buffer=detected_map_bytes)
@@ -814,6 +821,8 @@ class Script(scripts.Script):
                 hr_control = None
 
             if is_image:
+                _name = unit.module + "_controlnet"
+                timer.tic(_name)
                 if input_images is not None:
                     controls = []
                     for _detected_map in _detected_maps:
@@ -823,6 +832,8 @@ class Script(scripts.Script):
                 else:
                     control, detected_map = Script.detectmap_proc(detected_map, unit.module, resize_mode, h, w)
                     detected_maps.append((detected_map, unit.module))
+                timer.toc(_name)
+                logger.info("[%s time: ave %.4f, total %.4f]" %(_name, timer.avetime(_name), timer.totaltime(_name)))
             else:
                 control = detected_map
                 if unit.module == 'clip_vision':
