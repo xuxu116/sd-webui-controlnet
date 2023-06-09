@@ -829,7 +829,7 @@ class Script(scripts.Script):
                 hr_control = None
 
             if is_image:
-                _name = unit.module + "_controlnet"
+                _name = unit.module + "_detectmap_proc"
                 timer.tic(_name)
                 if input_images is not None:
                     controls = []
