@@ -580,8 +580,10 @@ class UnetHook(nn.Module):
                     outer.process.current_batch_xl < outer.gn_module_list[0].batchbank_mean_dict["batch"]:
 
                     for module in outer.attn_module_list:
-                        module.batchbank_dict = {"batch": outer.process.current_batch_xl, "timesteps": int(timesteps[0].cpu())}
-
+                        module.batchbank_dict = {"batch": outer.process.current_batch_xl, "timesteps": int(timesteps[0].cpu()), "timestepslist":[]}
+                        ## 用于储存更长的信息
+                        module.batchbank_dict_queue_positive = {"batch": outer.process.current_batch_xl, "timesteps": int(timesteps[0].cpu())}
+                        module.batchbank_dict_queue_negetive = {"batch": outer.process.current_batch_xl, "timesteps": int(timesteps[0].cpu())}
                     for module in outer.gn_module_list:
                         module.batchbank_mean_dict = {"batch": outer.process.current_batch_xl, "timesteps": int(timesteps[0].cpu())}
                         module.batchbank_std_dict = {}
@@ -770,7 +772,10 @@ class UnetHook(nn.Module):
                 context_n = []
                 ### 第一个batch
                 if self.batchbank_dict["batch"] == 0:
+                    self.batchbank_dict["timestepslist"].append(int(self.batchbank_dict["timesteps"]))
                     self.batchbank_dict[self.batchbank_dict["timesteps"]] = x_norm1.detach().clone()
+                    self.batchbank_dict_queue_positive[self.batchbank_dict["timesteps"]] = [x_norm1[0:1].detach().clone()]
+                    self.batchbank_dict_queue_negetive[self.batchbank_dict["timesteps"]] = [x_norm1[NNf:NNf+1].detach().clone()]
                     for i in range(NNf):
                         # context_p.append(torch.cat([x_norm1[0:i], x_norm1[i+1:NNf]]).mean(dim=0, keepdim=True))
                         context_p.append(torch.cat([x_norm1[0:i], x_norm1[i+1:NNf]]).reshape(1, -1, CC))
@@ -778,9 +783,10 @@ class UnetHook(nn.Module):
                     for i in range(NNf,NN):
                         # context_n.append(torch.cat([x_norm1[NNf:i], x_norm1[i+1:NN]]).mean(dim=0, keepdim=True))
                         context_n.append(torch.cat([x_norm1[NNf:i], x_norm1[i+1:NN]]).reshape(1,-1,CC))
-
+                    # import pdb
+                    # pdb.set_trace()
                     self_attn1 = self.attn1(x_norm1, context=torch.cat([x_norm1, torch.cat(context_p + context_n, dim=0)], dim=1))
-                else:
+                else: #if self.batchbank_dict["timesteps"] in self.batchbank_dict["timestepslist"][4:]:
                     Np, Dp, Cp = self.batchbank_dict[self.batchbank_dict["timesteps"]].shape
                     NPf = int(Np / 2)
                     _x_norm_p = torch.cat([self.batchbank_dict[self.batchbank_dict["timesteps"]][(NPf-NNf):NPf], x_norm1[:NNf]])
@@ -792,13 +798,28 @@ class UnetHook(nn.Module):
                     _x_norm_n = _x_norm_n[1:].unfold(0,NNf,1)
                     _x_norm_n = torch.permute(_x_norm_n, (3, 0, 1, 2))
                     _x_norm_n = _x_norm_n.reshape(NNf, -1, CC)
+                    # import pdb
+                    # pdb.set_trace()
                     try:
                         #### 待排查是否要再cat XNorm1
+                        long_p = torch.cat(self.batchbank_dict_queue_positive[self.batchbank_dict["timesteps"]], dim=1).repeat(NNf,1,1)
+                        long_n = torch.cat(self.batchbank_dict_queue_negetive[self.batchbank_dict["timesteps"]], dim=1).repeat(NNf,1,1)
+                        # self_attn1 = self.attn1(x_norm1, context=torch.cat([long_p, long_n], dim=0))
+                        _x_norm_p = torch.cat([long_p, _x_norm_p], dim=1)
+                        _x_norm_n = torch.cat([long_n, _x_norm_n], dim=1)
                         self_attn1 = self.attn1(x_norm1, context=torch.cat([_x_norm_p, _x_norm_n], dim=0))
                     except:
                         import pdb
                         pdb.set_trace()
-                    self.batchbank_dict[self.batchbank_dict["timesteps"]] = x_norm1.detach().clone()
+                    # self.batchbank_dict[self.batchbank_dict["timesteps"]] = x_norm1.detach().clone()
+                    if self.batchbank_dict["batch"] % 2 == 0:
+                        self.batchbank_dict_queue_positive[self.batchbank_dict["timesteps"]].append(x_norm1[0:1].detach().clone())
+                        self.batchbank_dict_queue_negetive[self.batchbank_dict["timesteps"]].append(x_norm1[NNf:NNf+1].detach().clone())
+                        
+                        if len(self.batchbank_dict_queue_positive[self.batchbank_dict["timesteps"]]) > 2:
+                            self.batchbank_dict_queue_positive[self.batchbank_dict["timesteps"]].pop(0)
+                        if len(self.batchbank_dict_queue_negetive[self.batchbank_dict["timesteps"]]) > 2:
+                            self.batchbank_dict_queue_negetive[self.batchbank_dict["timesteps"]].pop(0)
 
                 if self_attn1 is None:
                     self_attn1 = self.attn1(x_norm1, context=self_attention_context)
