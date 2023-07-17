@@ -1,30 +1,21 @@
 import gc
 import os
+import logging
 from collections import OrderedDict
 from copy import copy
 from typing import Dict, Optional, Tuple
-import importlib
 import modules.scripts as scripts
 from modules import shared, devices, script_callbacks, processing, masking, images
 import gradio as gr
 
+
 from einops import rearrange
 from scripts import global_state, hook, external_code, processor, batch_hijack, controlnet_version, utils
 from scripts.controlnet_ui import controlnet_ui_group
-importlib.reload(processor)
-importlib.reload(utils)
-importlib.reload(global_state)
-importlib.reload(hook)
-importlib.reload(external_code)
-# Reload ui group as `ControlNetUnit` is redefined in `external_code`. If `controlnet_ui_group`
-# is not reloaded, `UiControlNetUnit` will inherit from a stale version of `ControlNetUnit`,
-# which can cause typecheck to fail.
-importlib.reload(controlnet_ui_group)  
-importlib.reload(batch_hijack)
 from scripts.cldm import PlugableControlModel
 from scripts.processor import *
 from scripts.adapter import PlugableAdapter
-from scripts.utils import load_state_dict
+from scripts.utils import load_state_dict, get_unique_axis0
 from scripts.hook import ControlParams, UnetHook, ControlModelType
 from scripts.controlnet_ui.controlnet_ui_group import ControlNetUiGroup, UiControlNetUnit
 from scripts.logging import logger
@@ -209,7 +200,9 @@ def set_numpy_seed(p: processing.StableDiffusionProcessing) -> Optional[int]:
         return None
 
 
-class Script(scripts.Script):
+class Script(scripts.Script, metaclass=(
+    utils.TimeMeta if logger.level == logging.DEBUG else type)):
+
     model_cache = OrderedDict()
 
     def __init__(self) -> None:
@@ -425,6 +418,8 @@ class Script(scripts.Script):
         unit.threshold_b = selector(p, "control_net_pthr_b", unit.threshold_b, idx)
         unit.guidance_start = selector(p, "control_net_guidance_start", unit.guidance_start, idx)
         unit.guidance_end = selector(p, "control_net_guidance_end", unit.guidance_end, idx)
+        # Backward compatibility. See https://github.com/Mikubill/sd-webui-controlnet/issues/1740
+        # for more details.
         unit.guidance_end = selector(p, "control_net_guidance_strength", unit.guidance_end, idx)
         unit.control_mode = selector(p, "control_net_control_mode", unit.control_mode, idx)
         unit.pixel_perfect = selector(p, "control_net_pixel_perfect", unit.pixel_perfect, idx)
@@ -473,7 +468,7 @@ class Script(scripts.Script):
 
             new_size_is_smaller = (size[0] * size[1]) < (x.shape[0] * x.shape[1])
             new_size_is_bigger = (size[0] * size[1]) > (x.shape[0] * x.shape[1])
-            unique_color_count = np.unique(x.reshape(-1, x.shape[2]), axis=0).shape[0]
+            unique_color_count = len(get_unique_axis0(x.reshape(-1, x.shape[2])))
             is_one_pixel_edge = False
             is_binary = False
             if unique_color_count == 2:
@@ -763,7 +758,7 @@ class Script(scripts.Script):
 
             if 'reference' not in unit.module and issubclass(type(p), StableDiffusionProcessingImg2Img) \
                     and p.inpaint_full_res and a1111_mask_image is not None:
-
+                logger.debug("A1111 inpaint mask START")
                 input_image = [input_image[:, :, i] for i in range(input_image.shape[2])]
                 input_image = [Image.fromarray(x) for x in input_image]
 
@@ -785,13 +780,16 @@ class Script(scripts.Script):
 
                 input_image = [np.asarray(x)[:, :, 0] for x in input_image]
                 input_image = np.stack(input_image, axis=2)
+                logger.debug("A1111 inpaint mask END")
 
             if 'inpaint_only' == unit.module and issubclass(type(p), StableDiffusionProcessingImg2Img) and p.image_mask is not None:
                 logger.warning('A1111 inpaint and ControlNet inpaint duplicated. ControlNet support enabled.')
                 unit.module = 'inpaint'
 
             # safe numpy
+            logger.debug("Safe numpy convertion START")
             input_image = np.ascontiguousarray(input_image.copy()).copy()
+            logger.debug("Safe numpy convertion END")
 
             logger.info(f"Loading preprocessor: {unit.module}")
             preprocessor = self.preprocessor[unit.module]
