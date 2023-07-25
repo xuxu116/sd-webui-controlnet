@@ -764,62 +764,63 @@ class UnetHook(nn.Module):
             else:
                 # Use self-attention
                 self_attention_context = x_norm1
-                NN,DD,CC = x_norm1.shape
-                NNf = int(NN/2)
-                # import pdb
-                # pdb.set_trace()
-                context_p = []
-                context_n = []
-                ### 第一个batch
-                if self.batchbank_dict["batch"] == 0:
-                    self.batchbank_dict["timestepslist"].append(int(self.batchbank_dict["timesteps"]))
-                    self.batchbank_dict[self.batchbank_dict["timesteps"]] = x_norm1.detach().clone()
-                    self.batchbank_dict_queue_positive[self.batchbank_dict["timesteps"]] = [x_norm1[0:1].detach().clone()]
-                    self.batchbank_dict_queue_negetive[self.batchbank_dict["timesteps"]] = [x_norm1[NNf:NNf+1].detach().clone()]
-                    for i in range(NNf):
-                        # context_p.append(torch.cat([x_norm1[0:i], x_norm1[i+1:NNf]]).mean(dim=0, keepdim=True))
-                        context_p.append(torch.cat([x_norm1[0:i], x_norm1[i+1:NNf]]).reshape(1, -1, CC))
-
-                    for i in range(NNf,NN):
-                        # context_n.append(torch.cat([x_norm1[NNf:i], x_norm1[i+1:NN]]).mean(dim=0, keepdim=True))
-                        context_n.append(torch.cat([x_norm1[NNf:i], x_norm1[i+1:NN]]).reshape(1,-1,CC))
+                if outer.process.img2img_batch_atten_fidelity > self.attn_weight:
+                    NN,DD,CC = x_norm1.shape
+                    NNf = int(NN/2)
                     # import pdb
                     # pdb.set_trace()
-                    self_attn1 = self.attn1(x_norm1, context=torch.cat([x_norm1, torch.cat(context_p + context_n, dim=0)], dim=1))
-                else: #if self.batchbank_dict["timesteps"] in self.batchbank_dict["timestepslist"][4:]:
-                    Np, Dp, Cp = self.batchbank_dict[self.batchbank_dict["timesteps"]].shape
-                    NPf = int(Np / 2)
-                    _x_norm_p = torch.cat([self.batchbank_dict[self.batchbank_dict["timesteps"]][(NPf-NNf):NPf], x_norm1[:NNf]])
-                    _x_norm_p = _x_norm_p[1:].unfold(0,NNf,1)
-                    _x_norm_p = torch.permute(_x_norm_p, (3, 0, 1, 2))
-                    _x_norm_p = _x_norm_p.reshape(NNf, -1, CC)
+                    context_p = []
+                    context_n = []
+                    ### 第一个batch
+                    if self.batchbank_dict["batch"] == 0:
+                        self.batchbank_dict["timestepslist"].append(int(self.batchbank_dict["timesteps"]))
+                        self.batchbank_dict[self.batchbank_dict["timesteps"]] = x_norm1.detach().clone()
+                        self.batchbank_dict_queue_positive[self.batchbank_dict["timesteps"]] = [x_norm1[0:1].detach().clone()]
+                        self.batchbank_dict_queue_negetive[self.batchbank_dict["timesteps"]] = [x_norm1[NNf:NNf+1].detach().clone()]
+                        for i in range(NNf):
+                            # context_p.append(torch.cat([x_norm1[0:i], x_norm1[i+1:NNf]]).mean(dim=0, keepdim=True))
+                            context_p.append(torch.cat([x_norm1[0:i], x_norm1[i+1:NNf]]).reshape(1, -1, CC))
 
-                    _x_norm_n = torch.cat([self.batchbank_dict[self.batchbank_dict["timesteps"]][(NPf + NPf-NNf):], x_norm1[NNf:]])
-                    _x_norm_n = _x_norm_n[1:].unfold(0,NNf,1)
-                    _x_norm_n = torch.permute(_x_norm_n, (3, 0, 1, 2))
-                    _x_norm_n = _x_norm_n.reshape(NNf, -1, CC)
-                    # import pdb
-                    # pdb.set_trace()
-                    try:
-                        #### 待排查是否要再cat XNorm1
-                        long_p = torch.cat(self.batchbank_dict_queue_positive[self.batchbank_dict["timesteps"]], dim=1).repeat(NNf,1,1)
-                        long_n = torch.cat(self.batchbank_dict_queue_negetive[self.batchbank_dict["timesteps"]], dim=1).repeat(NNf,1,1)
-                        # self_attn1 = self.attn1(x_norm1, context=torch.cat([long_p, long_n], dim=0))
-                        _x_norm_p = torch.cat([long_p, _x_norm_p], dim=1)
-                        _x_norm_n = torch.cat([long_n, _x_norm_n], dim=1)
-                        self_attn1 = self.attn1(x_norm1, context=torch.cat([_x_norm_p, _x_norm_n], dim=0))
-                    except:
-                        import pdb
-                        pdb.set_trace()
-                    # self.batchbank_dict[self.batchbank_dict["timesteps"]] = x_norm1.detach().clone()
-                    if self.batchbank_dict["batch"] % 2 == 0:
-                        self.batchbank_dict_queue_positive[self.batchbank_dict["timesteps"]].append(x_norm1[0:1].detach().clone())
-                        self.batchbank_dict_queue_negetive[self.batchbank_dict["timesteps"]].append(x_norm1[NNf:NNf+1].detach().clone())
-                        
-                        if len(self.batchbank_dict_queue_positive[self.batchbank_dict["timesteps"]]) > 2:
-                            self.batchbank_dict_queue_positive[self.batchbank_dict["timesteps"]].pop(0)
-                        if len(self.batchbank_dict_queue_negetive[self.batchbank_dict["timesteps"]]) > 2:
-                            self.batchbank_dict_queue_negetive[self.batchbank_dict["timesteps"]].pop(0)
+                        for i in range(NNf,NN):
+                            # context_n.append(torch.cat([x_norm1[NNf:i], x_norm1[i+1:NN]]).mean(dim=0, keepdim=True))
+                            context_n.append(torch.cat([x_norm1[NNf:i], x_norm1[i+1:NN]]).reshape(1,-1,CC))
+                        # import pdb
+                        # pdb.set_trace()
+                        self_attn1 = self.attn1(x_norm1, context=torch.cat([x_norm1, torch.cat(context_p + context_n, dim=0)], dim=1))
+                    else: #if self.batchbank_dict["timesteps"] in self.batchbank_dict["timestepslist"][4:]:
+                        Np, Dp, Cp = self.batchbank_dict[self.batchbank_dict["timesteps"]].shape
+                        NPf = int(Np / 2)
+                        _x_norm_p = torch.cat([self.batchbank_dict[self.batchbank_dict["timesteps"]][(NPf-NNf):NPf], x_norm1[:NNf]])
+                        _x_norm_p = _x_norm_p[1:].unfold(0,NNf,1)
+                        _x_norm_p = torch.permute(_x_norm_p, (3, 0, 1, 2))
+                        _x_norm_p = _x_norm_p.reshape(NNf, -1, CC)
+
+                        _x_norm_n = torch.cat([self.batchbank_dict[self.batchbank_dict["timesteps"]][(NPf + NPf-NNf):], x_norm1[NNf:]])
+                        _x_norm_n = _x_norm_n[1:].unfold(0,NNf,1)
+                        _x_norm_n = torch.permute(_x_norm_n, (3, 0, 1, 2))
+                        _x_norm_n = _x_norm_n.reshape(NNf, -1, CC)
+                        # import pdb
+                        # pdb.set_trace()
+                        try:
+                            #### 待排查是否要再cat XNorm1
+                            long_p = torch.cat(self.batchbank_dict_queue_positive[self.batchbank_dict["timesteps"]], dim=1).repeat(NNf,1,1)
+                            long_n = torch.cat(self.batchbank_dict_queue_negetive[self.batchbank_dict["timesteps"]], dim=1).repeat(NNf,1,1)
+                            # self_attn1 = self.attn1(x_norm1, context=torch.cat([long_p, long_n], dim=0))
+                            _x_norm_p = torch.cat([long_p, _x_norm_p], dim=1)
+                            _x_norm_n = torch.cat([long_n, _x_norm_n], dim=1)
+                            self_attn1 = self.attn1(x_norm1, context=torch.cat([_x_norm_p, _x_norm_n], dim=0))
+                        except:
+                            import pdb
+                            pdb.set_trace()
+                        # self.batchbank_dict[self.batchbank_dict["timesteps"]] = x_norm1.detach().clone()
+                        if self.batchbank_dict["batch"] % 2 == 0:
+                            self.batchbank_dict_queue_positive[self.batchbank_dict["timesteps"]].append(x_norm1[0:1].detach().clone())
+                            self.batchbank_dict_queue_negetive[self.batchbank_dict["timesteps"]].append(x_norm1[NNf:NNf+1].detach().clone())
+                            
+                            if len(self.batchbank_dict_queue_positive[self.batchbank_dict["timesteps"]]) > 2:
+                                self.batchbank_dict_queue_positive[self.batchbank_dict["timesteps"]].pop(0)
+                            if len(self.batchbank_dict_queue_negetive[self.batchbank_dict["timesteps"]]) > 2:
+                                self.batchbank_dict_queue_negetive[self.batchbank_dict["timesteps"]].pop(0)
 
                 if self_attn1 is None:
                     self_attn1 = self.attn1(x_norm1, context=self_attention_context)
@@ -835,45 +836,47 @@ class UnetHook(nn.Module):
             NN,CC,HH,WW = x.shape
             NNf = int(NN/2)
             y = None
-            var, mean = torch.var_mean(x, dim=(2, 3), keepdim=True, correction=0)
-            std = torch.maximum(var, torch.zeros_like(var) + eps) ** 0.5
 
-            ### 第一个batch
-            if self.batchbank_mean_dict["batch"] == 0:
-                self.batchbank_mean_dict[self.batchbank_mean_dict["timesteps"]] = mean.detach().clone()
-                self.batchbank_std_dict[self.batchbank_mean_dict["timesteps"]] = std.detach().clone()
-          
-                std_positive = torch.mean(std[:NNf], dim=0, keepdim=True).repeat(NNf,1,1,1)
-                mean_positive = torch.mean(mean[:NNf], dim=0, keepdim=True).repeat(NNf,1,1,1)
-                std_neg = torch.mean(std[NNf:], dim=0, keepdim=True).repeat(NNf,1,1,1)
-                mean_neg = torch.mean(mean[NNf:], dim=0, keepdim=True).repeat(NNf,1,1,1)
-                std_new = torch.cat([std_positive, std_neg])
-                mean_new = torch.cat([mean_positive, mean_neg])       
+            if outer.process.img2img_batch_gn_fidelity > self.gn_weight:
+                var, mean = torch.var_mean(x, dim=(2, 3), keepdim=True, correction=0)
+                std = torch.maximum(var, torch.zeros_like(var) + eps) ** 0.5
 
-            else:
-                Np, Dp, _, _ = self.batchbank_mean_dict[self.batchbank_mean_dict["timesteps"]].shape
-                NPf = int(Np / 2)
-                _mean_positive = torch.cat([self.batchbank_mean_dict[self.batchbank_mean_dict["timesteps"]][(NPf-NNf):NPf], mean[:NNf]], dim=0)
-                _mean_positive = _mean_positive[1:].unfold(0,NNf,1)
-                _mean_positive = _mean_positive.mean(-1)
-                _std_positive = torch.cat([self.batchbank_std_dict[self.batchbank_mean_dict["timesteps"]][(NPf-NNf):NPf], std[:NNf]], dim=0)
-                _std_positive = _std_positive[1:].unfold(0,NNf,1)
-                _std_positive = _std_positive.mean(-1)
+                ### 第一个batch
+                if self.batchbank_mean_dict["batch"] == 0:
+                    self.batchbank_mean_dict[self.batchbank_mean_dict["timesteps"]] = mean.detach().clone()
+                    self.batchbank_std_dict[self.batchbank_mean_dict["timesteps"]] = std.detach().clone()
+            
+                    std_positive = torch.mean(std[:NNf], dim=0, keepdim=True).repeat(NNf,1,1,1)
+                    mean_positive = torch.mean(mean[:NNf], dim=0, keepdim=True).repeat(NNf,1,1,1)
+                    std_neg = torch.mean(std[NNf:], dim=0, keepdim=True).repeat(NNf,1,1,1)
+                    mean_neg = torch.mean(mean[NNf:], dim=0, keepdim=True).repeat(NNf,1,1,1)
+                    std_new = torch.cat([std_positive, std_neg])
+                    mean_new = torch.cat([mean_positive, mean_neg])       
 
-                _mean_neg = torch.cat([self.batchbank_mean_dict[self.batchbank_mean_dict["timesteps"]][(NPf + NPf-NNf):], mean[NNf:]], dim=0)
-                _mean_neg = _mean_neg[1:].unfold(0,NNf,1)
-                _mean_neg = _mean_neg.mean(-1)
-                _std_neg = torch.cat([self.batchbank_std_dict[self.batchbank_mean_dict["timesteps"]][(NPf + NPf-NNf):], std[NNf:]], dim=0)
-                _std_neg = _std_neg[1:].unfold(0,NNf,1)
-                _std_neg = _std_neg.mean(-1)
-                
-                std_new = torch.cat([_std_positive, _std_neg])
-                mean_new = torch.cat([_mean_positive, _mean_neg]) 
+                else:
+                    Np, Dp, _, _ = self.batchbank_mean_dict[self.batchbank_mean_dict["timesteps"]].shape
+                    NPf = int(Np / 2)
+                    _mean_positive = torch.cat([self.batchbank_mean_dict[self.batchbank_mean_dict["timesteps"]][(NPf-NNf):NPf], mean[:NNf]], dim=0)
+                    _mean_positive = _mean_positive[1:].unfold(0,NNf,1)
+                    _mean_positive = _mean_positive.mean(-1)
+                    _std_positive = torch.cat([self.batchbank_std_dict[self.batchbank_mean_dict["timesteps"]][(NPf-NNf):NPf], std[:NNf]], dim=0)
+                    _std_positive = _std_positive[1:].unfold(0,NNf,1)
+                    _std_positive = _std_positive.mean(-1)
 
-                self.batchbank_mean_dict[self.batchbank_mean_dict["timesteps"]] = mean_new.detach().clone()
-                self.batchbank_std_dict[self.batchbank_mean_dict["timesteps"]] = std_new.detach().clone()
+                    _mean_neg = torch.cat([self.batchbank_mean_dict[self.batchbank_mean_dict["timesteps"]][(NPf + NPf-NNf):], mean[NNf:]], dim=0)
+                    _mean_neg = _mean_neg[1:].unfold(0,NNf,1)
+                    _mean_neg = _mean_neg.mean(-1)
+                    _std_neg = torch.cat([self.batchbank_std_dict[self.batchbank_mean_dict["timesteps"]][(NPf + NPf-NNf):], std[NNf:]], dim=0)
+                    _std_neg = _std_neg[1:].unfold(0,NNf,1)
+                    _std_neg = _std_neg.mean(-1)
+                    
+                    std_new = torch.cat([_std_positive, _std_neg])
+                    mean_new = torch.cat([_mean_positive, _mean_neg]) 
 
-            y = (((x - mean) / std) * std_new) + mean_new
+                    self.batchbank_mean_dict[self.batchbank_mean_dict["timesteps"]] = mean_new.detach().clone()
+                    self.batchbank_std_dict[self.batchbank_mean_dict["timesteps"]] = std_new.detach().clone()
+
+                y = (((x - mean) / std) * std_new) + mean_new
 
             if y is None:
                 y = x
